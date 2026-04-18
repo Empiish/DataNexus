@@ -1,65 +1,100 @@
-import Image from "next/image";
+'use client';
 
-export default function Home() {
+import { useEffect, useState } from 'react';
+import Link from 'next/link';
+
+interface App {
+  id: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  status: string;
+  created_by: string;
+  schema_name: string;
+  created_at: string;
+  active_keys: number;
+}
+
+export default function Dashboard() {
+  const [apps, setApps] = useState<App[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch('/api/v1/apps')
+      .then(r => r.json())
+      .then(data => { setApps(data); setLoading(false); });
+  }, []);
+
+  const active = apps.filter(a => a.status === 'active').length;
+  const totalKeys = apps.reduce((sum, a) => sum + a.active_keys, 0);
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <>
+      <header className="main-header">
+        <h1>Dashboard</h1>
+      </header>
+      <main className="main-content animate-in">
+        <div className="stat-grid">
+          <div className="stat-card">
+            <div className="stat-value">{loading ? '—' : apps.length}</div>
+            <div className="stat-label">Total apps</div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-value" style={{ color: 'var(--color-success)' }}>{loading ? '—' : active}</div>
+            <div className="stat-label">Active</div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-value">{loading ? '—' : totalKeys}</div>
+            <div className="stat-label">Active keys</div>
+          </div>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+
+        <div className="card">
+          <div className="card-header">
+            <h2>Applications</h2>
+            <Link href="/apps/new" className="btn btn-primary" style={{ fontSize: 12 }}>
+              + Register app
+            </Link>
+          </div>
+          {loading ? (
+            <div className="empty-state">Loading…</div>
+          ) : apps.length === 0 ? (
+            <div className="empty-state">No applications registered yet.</div>
+          ) : (
+            <table>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Slug</th>
+                  <th>Status</th>
+                  <th>Active keys</th>
+                  <th>Created</th>
+                </tr>
+              </thead>
+              <tbody>
+                {apps.map(app => (
+                  <tr key={app.id} style={{ cursor: 'pointer' }}>
+                    <td>
+                      <Link href={`/apps/${app.slug}`} style={{ color: 'var(--color-accent)', textDecoration: 'none', fontWeight: 500 }}>
+                        {app.name}
+                      </Link>
+                      {app.description && (
+                        <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', marginTop: 2 }}>{app.description}</div>
+                      )}
+                    </td>
+                    <td><span className="mono">{app.slug}</span></td>
+                    <td><span className={`badge badge-${app.status}`}>{app.status}</span></td>
+                    <td>{app.active_keys}</td>
+                    <td style={{ color: 'var(--color-text-tertiary)' }}>
+                      {new Date(app.created_at).toLocaleDateString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </div>
       </main>
-    </div>
+    </>
   );
 }

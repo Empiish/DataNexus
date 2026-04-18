@@ -1,0 +1,55 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Application {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  slug        String   @unique
+  description String?
+  createdBy   String
+  schemaName  String   @unique
+  dbUser      String   @unique
+  status      String   @default("active")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  lastSeenAt  DateTime?
+
+  connectionKeys ConnectionKey[]
+  auditEvents    AuditEvent[]
+}
+
+model ConnectionKey {
+  id            String    @id @default(cuid())
+  applicationId String
+  keyHash       String    @unique
+  keyPrefix     String
+  label         String?
+  createdAt     DateTime  @default(now())
+  lastUsedAt    DateTime?
+  revokedAt     DateTime?
+
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+}
+
+model AuditEvent {
+  id            String   @id @default(cuid())
+  applicationId String?
+  eventType     String
+  actor         String
+  metadata      String?
+  createdAt     DateTime @default(now())
+
+  application Application? @relation(fields: [applicationId], references: [id], onDelete: SetNull)
+}
