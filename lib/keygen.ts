@@ -15,7 +15,7 @@ export function generateDbPassword(): string {
 export function buildConnectionString(slug: string, password: string): string {
   const host = process.env.PG_HOST ?? 'localhost';
   const port = process.env.PG_PORT ?? '5432';
-  const db = process.env.PG_DATABASE ?? 'datanexus';
+  const db = process.env.PG_DB ?? 'datanexus';
   const user = `app_${slug}`;
   const schema = `app_${slug}`;
   return `postgresql://${user}:${password}@${host}:${port}/${db}?schema=${schema}`;
