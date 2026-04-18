@@ -50,7 +50,7 @@ export default function AppDetailPage({ params }: { params: Promise<{ id: string
 
   const reload = () =>
     fetch(`/api/v1/apps/${id}`)
-      .then(r => r.json())
+      .then(r => r.ok ? r.json() : null)
       .then(data => { setApp(data); setLoading(false); });
 
   useEffect(() => {
