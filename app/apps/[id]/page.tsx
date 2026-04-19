@@ -21,8 +21,33 @@ interface Event {
 }
 
 interface SchemaTable {
-  table_name: string;
-  row_count: number;
+  table: string;
+  rows: number;
+  size_bytes: number;
+  last_activity: string | null;
+  inserts: number;
+  updates: number;
+  deletes: number;
+}
+
+function formatBytes(n: number): string {
+  if (n === 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.min(Math.floor(Math.log10(n) / 3), units.length - 1);
+  const v = n / Math.pow(1000, i);
+  return `${v < 10 ? v.toFixed(1) : Math.round(v)} ${units[i]}`;
+}
+
+function timeAgo(iso: string | null): string {
+  if (!iso) return '—';
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 60_000) return 'just now';
+  const m = Math.floor(ms / 60_000);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  return `${d}d ago`;
 }
 
 interface AppDetail {
@@ -131,23 +156,76 @@ export default function AppDetailPage({ params }: { params: Promise<{ id: string
           </div>
         </div>
 
-        {/* Schema tables */}
-        {tables.length > 0 && (
-          <div className="card">
-            <div className="card-header"><h2>Schema tables</h2></div>
-            <table>
-              <thead><tr><th>Table</th><th>Rows</th></tr></thead>
-              <tbody>
-                {tables.map(t => (
-                  <tr key={t.table_name}>
-                    <td><span className="mono">{t.table_name}</span></td>
-                    <td>{t.row_count.toLocaleString()}</td>
-                  </tr>
+        {/* Data overview — stats summary */}
+        {(() => {
+          const totalRows = tables.reduce((a, t) => a + t.rows, 0);
+          const totalSize = tables.reduce((a, t) => a + t.size_bytes, 0);
+          const lastActivity = tables
+            .map(t => t.last_activity)
+            .filter((x): x is string => !!x)
+            .sort()
+            .reverse()[0] ?? null;
+          const maxSize = Math.max(1, ...tables.map(t => t.size_bytes));
+          return (
+            <div className="card">
+              <div className="card-header"><h2>Data overview</h2></div>
+              <div className="card-body" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
+                {[
+                  ['Tables', tables.length.toLocaleString()],
+                  ['Total rows', totalRows.toLocaleString()],
+                  ['Schema size', formatBytes(totalSize)],
+                  ['Last activity', timeAgo(lastActivity)],
+                ].map(([label, value]) => (
+                  <div key={label}>
+                    <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>{label}</div>
+                    <div style={{ color: 'var(--color-text-primary)', fontSize: 20, fontWeight: 600 }}>{value}</div>
+                  </div>
                 ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+              </div>
+
+              {tables.length === 0 ? (
+                <div className="empty-state">No tables in this schema yet. Your app hasn't created any — run your migrations to populate it.</div>
+              ) : (
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Table</th>
+                      <th style={{ textAlign: 'right' }}>Rows</th>
+                      <th>Size</th>
+                      <th style={{ textAlign: 'right' }}>Inserts</th>
+                      <th style={{ textAlign: 'right' }}>Updates</th>
+                      <th style={{ textAlign: 'right' }}>Deletes</th>
+                      <th>Last activity</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tables.map(t => {
+                      const pct = Math.round((t.size_bytes / maxSize) * 100);
+                      return (
+                        <tr key={t.table}>
+                          <td><span className="mono">{t.table}</span></td>
+                          <td style={{ textAlign: 'right' }}>{t.rows.toLocaleString()}</td>
+                          <td>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 140 }}>
+                              <div style={{ flex: 1, height: 6, background: 'var(--color-border)', borderRadius: 3, overflow: 'hidden' }}>
+                                <div style={{ width: `${pct}%`, height: '100%', background: 'var(--color-accent, #4f8ef7)' }} />
+                              </div>
+                              <span className="mono" style={{ fontSize: 12, color: 'var(--color-text-tertiary)', minWidth: 56, textAlign: 'right' }}>{formatBytes(t.size_bytes)}</span>
+                            </div>
+                          </td>
+                          <td style={{ textAlign: 'right' }}>{t.inserts.toLocaleString()}</td>
+                          <td style={{ textAlign: 'right' }}>{t.updates.toLocaleString()}</td>
+                          <td style={{ textAlign: 'right' }}>{t.deletes.toLocaleString()}</td>
+                          <td style={{ color: 'var(--color-text-tertiary)' }}>{timeAgo(t.last_activity)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          );
+        })()}
 
         {/* New key result */}
         {newKey && (

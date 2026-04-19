@@ -35,23 +35,54 @@ export async function dropAppSchema(slug: string) {
   }
 }
 
-export async function introspectSchema(slug: string): Promise<{ table: string; rows: number }[]> {
+export interface TableStats {
+  table: string;
+  rows: number;
+  size_bytes: number;
+  last_activity: string | null;
+  inserts: number;
+  updates: number;
+  deletes: number;
+}
+
+export async function introspectSchema(slug: string): Promise<TableStats[]> {
   const schema = `app_${slug}`;
   const client = adminClient();
   await client.connect();
   try {
-    const tablesRes = await client.query(
-      `SELECT table_name FROM information_schema.tables WHERE table_schema = $1 ORDER BY table_name`,
+    const res = await client.query(
+      `SELECT
+         c.relname AS table_name,
+         COALESCE(s.n_live_tup, 0)::bigint AS rows,
+         pg_total_relation_size(c.oid)::bigint AS size_bytes,
+         GREATEST(s.last_autovacuum, s.last_vacuum, s.last_autoanalyze, s.last_analyze) AS last_activity,
+         COALESCE(s.n_tup_ins, 0)::bigint AS inserts,
+         COALESCE(s.n_tup_upd, 0)::bigint AS updates,
+         COALESCE(s.n_tup_del, 0)::bigint AS deletes
+       FROM pg_class c
+       JOIN pg_namespace n ON n.oid = c.relnamespace
+       LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
+       WHERE n.nspname = $1 AND c.relkind = 'r'
+       ORDER BY c.relname`,
       [schema]
     );
-    const tables = tablesRes.rows.map((r: { table_name: string }) => r.table_name);
-    const counts = await Promise.all(
-      tables.map(async (t: string) => {
-        const res = await client.query(`SELECT COUNT(*) FROM "${schema}"."${t}"`);
-        return { table: t, rows: parseInt(res.rows[0].count, 10) };
-      })
-    );
-    return counts;
+    return res.rows.map((r: {
+      table_name: string;
+      rows: string | number;
+      size_bytes: string | number;
+      last_activity: Date | null;
+      inserts: string | number;
+      updates: string | number;
+      deletes: string | number;
+    }) => ({
+      table: r.table_name,
+      rows: Number(r.rows),
+      size_bytes: Number(r.size_bytes),
+      last_activity: r.last_activity ? new Date(r.last_activity).toISOString() : null,
+      inserts: Number(r.inserts),
+      updates: Number(r.updates),
+      deletes: Number(r.deletes),
+    }));
   } finally {
     await client.end();
   }
