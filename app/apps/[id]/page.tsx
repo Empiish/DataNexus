@@ -203,7 +203,15 @@ export default function AppDetailPage({ params }: { params: Promise<{ id: string
                       const pct = Math.round((t.size_bytes / maxSize) * 100);
                       return (
                         <tr key={t.table}>
-                          <td><span className="mono">{t.table}</span></td>
+                          <td>
+                            <Link
+                              href={`/apps/${id}/tables/${encodeURIComponent(t.table)}`}
+                              className="mono"
+                              style={{ color: 'var(--color-accent, #4f8ef7)', textDecoration: 'none' }}
+                            >
+                              {t.table}
+                            </Link>
+                          </td>
                           <td style={{ textAlign: 'right' }}>{t.rows.toLocaleString()}</td>
                           <td>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 140 }}>
