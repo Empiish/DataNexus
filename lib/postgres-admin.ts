@@ -138,6 +138,91 @@ export async function introspectTable(slug: string, table: string): Promise<Colu
   }
 }
 
+const TS_COLUMN_CANDIDATES = [
+  'created_at', 'inserted_at', 'createdAt', 'insertedAt',
+  'updated_at', 'updatedAt',
+  'timestamp', 'ts', 'time', 'date', 'occurred_at', 'event_time',
+];
+
+export interface RowPreview {
+  rows: Record<string, unknown>[];
+  order_by: string;
+  order_direction: 'ASC' | 'DESC';
+  total_estimate: number;
+}
+
+export async function previewRows(slug: string, table: string, limit = 100): Promise<RowPreview | null> {
+  const schema = `app_${slug}`;
+  const client = adminClient();
+  await client.connect();
+  try {
+    // Verify table exists
+    const exists = await client.query(
+      `SELECT c.oid FROM pg_class c
+       JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = 'r'`,
+      [schema, table]
+    );
+    if (exists.rowCount === 0) return null;
+
+    // Find all column names so we can pick a sensible ORDER BY
+    const cols = await client.query(
+      `SELECT column_name, data_type FROM information_schema.columns
+       WHERE table_schema = $1 AND table_name = $2
+       ORDER BY ordinal_position`,
+      [schema, table]
+    );
+    const names: string[] = cols.rows.map((r: { column_name: string }) => r.column_name);
+    const nameSet = new Set(names);
+
+    let orderBy = '';
+    // Prefer a recognized timestamp column
+    for (const cand of TS_COLUMN_CANDIDATES) {
+      if (nameSet.has(cand)) { orderBy = cand; break; }
+    }
+    // Fall back to any timestamp-typed column
+    if (!orderBy) {
+      const tsCol = cols.rows.find((r: { data_type: string }) =>
+        r.data_type.startsWith('timestamp') || r.data_type === 'date'
+      );
+      if (tsCol) orderBy = tsCol.column_name;
+    }
+    // Finally: id DESC, else first column
+    if (!orderBy) {
+      if (nameSet.has('id')) orderBy = 'id';
+      else orderBy = names[0] ?? '';
+    }
+
+    const safeCap = Math.max(1, Math.min(limit, 500));
+    const quoted = `"${orderBy.replace(/"/g, '""')}"`;
+    const sql = orderBy
+      ? `SELECT * FROM "${schema}"."${table}" ORDER BY ${quoted} DESC NULLS LAST LIMIT ${safeCap}`
+      : `SELECT * FROM "${schema}"."${table}" LIMIT ${safeCap}`;
+
+    const res = await client.query(sql);
+
+    // Estimate total rows via pg_class.reltuples (fast, approximate)
+    const estimate = await client.query(
+      `SELECT COALESCE(n_live_tup, reltuples)::bigint AS rows
+       FROM pg_class c
+       JOIN pg_namespace n ON n.oid = c.relnamespace
+       LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
+       WHERE n.nspname = $1 AND c.relname = $2`,
+      [schema, table]
+    );
+    const total = Number(estimate.rows[0]?.rows ?? 0);
+
+    return {
+      rows: res.rows,
+      order_by: orderBy || '(none)',
+      order_direction: 'DESC',
+      total_estimate: total,
+    };
+  } finally {
+    await client.end();
+  }
+}
+
 export async function introspectSchema(slug: string): Promise<TableStats[]> {
   const schema = `app_${slug}`;
   const client = adminClient();

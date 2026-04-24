@@ -21,6 +21,26 @@ interface TablePayload {
   error?: string;
 }
 
+interface RowsPayload {
+  rows: Record<string, unknown>[];
+  order_by: string;
+  order_direction: string;
+  total_estimate: number;
+  returned: number;
+}
+
+function formatCell(v: unknown): { short: string; full: string; truncated: boolean } {
+  if (v === null) return { short: 'null', full: 'null', truncated: false };
+  if (v === undefined) return { short: '—', full: '—', truncated: false };
+  let full: string;
+  if (typeof v === 'string') full = v;
+  else if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'bigint') full = String(v);
+  else full = JSON.stringify(v);
+  const LIMIT = 60;
+  const truncated = full.length > LIMIT;
+  return { short: truncated ? full.slice(0, LIMIT) + '…' : full, full, truncated };
+}
+
 function Tag({ children, color }: { children: React.ReactNode; color: string }) {
   return (
     <span style={{
@@ -41,8 +61,11 @@ function Tag({ children, color }: { children: React.ReactNode; color: string }) 
 export default function TableDrillDownPage({ params }: { params: Promise<{ id: string; table: string }> }) {
   const { id, table } = use(params);
   const [data, setData] = useState<TablePayload | null>(null);
+  const [rowsData, setRowsData] = useState<RowsPayload | null>(null);
+  const [rowsLoading, setRowsLoading] = useState(true);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     fetch(`/api/v1/apps/${id}/schema/${encodeURIComponent(table)}`)
@@ -52,6 +75,11 @@ export default function TableDrillDownPage({ params }: { params: Promise<{ id: s
       })
       .then(d => { if (d) setData(d); setLoading(false); })
       .catch(() => setLoading(false));
+
+    fetch(`/api/v1/apps/${id}/schema/${encodeURIComponent(table)}/rows?limit=100`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { setRowsData(d); setRowsLoading(false); })
+      .catch(() => setRowsLoading(false));
   }, [id, table]);
 
   if (loading) return (
@@ -137,10 +165,72 @@ export default function TableDrillDownPage({ params }: { params: Promise<{ id: s
           )}
         </div>
 
-        {/* Placeholders for upcoming layers */}
+        {/* Rows preview */}
         <div className="card">
-          <div className="card-header"><h2>Rows preview</h2><span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>coming soon</span></div>
-          <div className="empty-state">Last 100 rows will appear here (L-088).</div>
+          <div className="card-header">
+            <h2>Rows preview</h2>
+            <span style={{ fontSize: 12, color: 'var(--color-text-tertiary)' }}>
+              {rowsLoading ? 'loading…' : rowsData ? (
+                <>
+                  showing {rowsData.returned.toLocaleString()}
+                  {rowsData.total_estimate > rowsData.returned && (
+                    <> of ~{rowsData.total_estimate.toLocaleString()}</>
+                  )}
+                  {' · '}
+                  ordered by <span className="mono">{rowsData.order_by}</span> {rowsData.order_direction}
+                </>
+              ) : 'unavailable'}
+            </span>
+          </div>
+          {rowsLoading ? (
+            <div className="empty-state">Loading rows…</div>
+          ) : !rowsData || rowsData.rows.length === 0 ? (
+            <div className="empty-state">No rows in this table yet.</div>
+          ) : (
+            <div style={{ overflowX: 'auto' }}>
+              <table>
+                <thead>
+                  <tr>
+                    {data.columns.map(c => (
+                      <th key={c.name}><span className="mono" style={{ fontSize: 11 }}>{c.name}</span></th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rowsData.rows.map((row, i) => (
+                    <tr key={i}>
+                      {data.columns.map(c => {
+                        const cell = formatCell(row[c.name]);
+                        const key = `${i}:${c.name}`;
+                        const isOpen = expanded[key];
+                        return (
+                          <td key={c.name} style={{ fontSize: 12, maxWidth: 320 }}>
+                            {cell.truncated ? (
+                              <span>
+                                <span
+                                  className="mono"
+                                  style={{ cursor: 'pointer', color: 'var(--color-text-secondary)' }}
+                                  onClick={() => setExpanded(e => ({ ...e, [key]: !isOpen }))}
+                                  title="Click to expand"
+                                >
+                                  {isOpen ? cell.full : cell.short}
+                                </span>
+                              </span>
+                            ) : (
+                              <span className="mono" style={{
+                                color: cell.short === 'null' ? 'var(--color-text-tertiary)' : 'var(--color-text-primary)',
+                                fontStyle: cell.short === 'null' ? 'italic' : 'normal',
+                              }}>{cell.short}</span>
+                            )}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
         <div className="card">
           <div className="card-header"><h2>Activity</h2><span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>coming soon</span></div>
