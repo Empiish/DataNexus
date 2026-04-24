@@ -35,16 +35,31 @@ function timeAgoShort(iso: string): string {
   return `${Math.floor(ms / 86_400_000)}d`;
 }
 
+interface IdleApp {
+  applicationId: string;
+  slug: string;
+  name: string;
+  last_write_at: string | null;
+  days_idle: number | null;
+  is_idle: boolean;
+}
+
 export default function Dashboard() {
   const [apps, setApps] = useState<App[]>([]);
   const [loading, setLoading] = useState(true);
   const [activity, setActivity] = useState<ActivityEvent[]>([]);
   const [pollerStarted, setPollerStarted] = useState(false);
+  const [idleApps, setIdleApps] = useState<IdleApp[]>([]);
 
   useEffect(() => {
     fetch('/api/v1/apps')
       .then(r => r.json())
       .then(data => { setApps(data); setLoading(false); });
+
+    fetch('/api/v1/activity/idle?days=7')
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) setIdleApps(d.apps ?? []); })
+      .catch(() => {});
 
     const fetchActivity = () => {
       fetch('/api/v1/activity/tail?limit=20')
@@ -80,6 +95,38 @@ export default function Dashboard() {
             <div className="stat-label">Active keys</div>
           </div>
         </div>
+
+        {/* Idle apps callout (L-094) */}
+        {idleApps.filter(a => a.is_idle).length > 0 && (
+          <div className="card" style={{ border: '1px solid var(--color-warning)', background: 'var(--color-warning-light)' }}>
+            <div className="card-header" style={{ background: 'transparent' }}>
+              <h2 style={{ color: 'var(--color-warning)' }}>
+                ⚠ Idle apps ({idleApps.filter(a => a.is_idle).length})
+              </h2>
+              <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>no writes in past 7 days</span>
+            </div>
+            <table>
+              <thead><tr><th>App</th><th>Last write</th><th style={{ textAlign: 'right' }}>Days idle</th></tr></thead>
+              <tbody>
+                {idleApps.filter(a => a.is_idle).map(a => (
+                  <tr key={a.applicationId}>
+                    <td>
+                      <Link href={`/apps/${a.slug}`} style={{ color: 'var(--color-accent)', textDecoration: 'none', fontWeight: 500 }}>
+                        {a.name}
+                      </Link>
+                    </td>
+                    <td style={{ color: 'var(--color-text-tertiary)', fontSize: 12 }}>
+                      {a.last_write_at ? new Date(a.last_write_at).toLocaleString() : 'never'}
+                    </td>
+                    <td style={{ textAlign: 'right', color: 'var(--color-warning)', fontWeight: 600 }}>
+                      {a.days_idle !== null ? `${a.days_idle}d` : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
 
         {/* Live activity tail */}
         <div className="card">

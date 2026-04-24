@@ -29,6 +29,33 @@ interface RowsPayload {
   returned: number;
 }
 
+interface SparklineBucket { bucket: string; inserts: number; updates: number; deletes: number; }
+interface SparklinePayload { granularity: 'hour' | 'day'; span: '24h' | '30d'; buckets: SparklineBucket[]; }
+
+interface GrowthPayload {
+  size_now: number; size_24h_ago: number | null; size_7d_ago: number | null;
+  delta_24h: number | null; delta_7d: number | null;
+  rows_now: number; rows_24h_ago: number | null; rows_7d_ago: number | null;
+}
+
+function fmtBytes(n: number): string {
+  if (n === 0) return '0 B';
+  const sign = n < 0 ? '-' : '';
+  const abs = Math.abs(n);
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.min(Math.floor(Math.log10(abs) / 3), units.length - 1);
+  const v = abs / Math.pow(1000, i);
+  return `${sign}${v < 10 ? v.toFixed(1) : Math.round(v)} ${units[i]}`;
+}
+
+function fmtDelta(n: number | null, asBytes = false): { text: string; color: string } {
+  if (n === null) return { text: '—', color: 'var(--color-text-tertiary)' };
+  if (n === 0) return { text: '±0', color: 'var(--color-text-tertiary)' };
+  const sign = n > 0 ? '+' : '';
+  const text = asBytes ? (sign + fmtBytes(n)) : (sign + n.toLocaleString());
+  return { text, color: n > 0 ? 'var(--color-success)' : 'var(--color-error)' };
+}
+
 function formatCell(v: unknown): { short: string; full: string; truncated: boolean } {
   if (v === null) return { short: 'null', full: 'null', truncated: false };
   if (v === undefined) return { short: '—', full: '—', truncated: false };
@@ -63,6 +90,9 @@ export default function TableDrillDownPage({ params }: { params: Promise<{ id: s
   const [data, setData] = useState<TablePayload | null>(null);
   const [rowsData, setRowsData] = useState<RowsPayload | null>(null);
   const [rowsLoading, setRowsLoading] = useState(true);
+  const [spark, setSpark] = useState<SparklinePayload | null>(null);
+  const [sparkSpan, setSparkSpan] = useState<'24h' | '30d'>('24h');
+  const [growth, setGrowth] = useState<GrowthPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
@@ -80,7 +110,15 @@ export default function TableDrillDownPage({ params }: { params: Promise<{ id: s
       .then(r => r.ok ? r.json() : null)
       .then(d => { setRowsData(d); setRowsLoading(false); })
       .catch(() => setRowsLoading(false));
+
+    fetch(`/api/v1/apps/${id}/schema/${encodeURIComponent(table)}/growth`)
+      .then(r => r.ok ? r.json() : null).then(d => setGrowth(d)).catch(() => {});
   }, [id, table]);
+
+  useEffect(() => {
+    fetch(`/api/v1/apps/${id}/schema/${encodeURIComponent(table)}/sparkline?span=${sparkSpan}`)
+      .then(r => r.ok ? r.json() : null).then(d => setSpark(d)).catch(() => {});
+  }, [id, table, sparkSpan]);
 
   if (loading) return (
     <>
@@ -232,9 +270,85 @@ export default function TableDrillDownPage({ params }: { params: Promise<{ id: s
             </div>
           )}
         </div>
+        {/* Activity sparkline + size/growth */}
         <div className="card">
-          <div className="card-header"><h2>Activity</h2><span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>coming soon</span></div>
-          <div className="empty-state">Write activity sparkline (L-089) and size/growth deltas (L-090).</div>
+          <div className="card-header">
+            <h2>Activity &amp; growth</h2>
+            <div style={{ display: 'flex', gap: 4 }}>
+              {(['24h', '30d'] as const).map(s => (
+                <button
+                  key={s}
+                  onClick={() => setSparkSpan(s)}
+                  className={sparkSpan === s ? 'btn btn-primary' : 'btn btn-ghost'}
+                  style={{ fontSize: 11, padding: '4px 10px' }}
+                >{s}</button>
+              ))}
+            </div>
+          </div>
+          <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+
+            {/* Sparkline bars */}
+            {!spark ? (
+              <div style={{ fontSize: 12, color: 'var(--color-text-tertiary)' }}>Loading sparkline…</div>
+            ) : (() => {
+              const maxVal = Math.max(1, ...spark.buckets.map(b => b.inserts + b.updates + b.deletes));
+              return (
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'flex-end', gap: 2, height: 80 }}>
+                    {spark.buckets.map((b, i) => {
+                      const total = b.inserts + b.updates + b.deletes;
+                      const h = Math.max(1, Math.round((total / maxVal) * 80));
+                      return (
+                        <div
+                          key={i}
+                          title={`${new Date(b.bucket).toLocaleString()}: +${b.inserts} ~${b.updates} -${b.deletes}`}
+                          style={{
+                            flex: 1,
+                            height: h,
+                            background: total === 0 ? 'var(--color-border)' : 'var(--color-accent, #4f8ef7)',
+                            borderRadius: 2,
+                            minWidth: 3,
+                            opacity: total === 0 ? 0.4 : 0.85,
+                          }}
+                        />
+                      );
+                    })}
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--color-text-tertiary)', marginTop: 4 }}>
+                    <span>{sparkSpan === '24h' ? '24h ago' : '30d ago'}</span>
+                    <span>{sparkSpan === '24h' ? 'per hour' : 'per day'}</span>
+                    <span>now</span>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Size + growth deltas */}
+            {growth && (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16 }}>
+                <div>
+                  <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Current</div>
+                  <div style={{ fontSize: 18, fontWeight: 600 }}>{fmtBytes(growth.size_now)}</div>
+                  <div style={{ fontSize: 12, color: 'var(--color-text-tertiary)' }}>{growth.rows_now.toLocaleString()} rows</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Δ 24h</div>
+                  {(() => { const d = fmtDelta(growth.delta_24h, true); return <div style={{ fontSize: 18, fontWeight: 600, color: d.color }}>{d.text}</div>; })()}
+                  <div style={{ fontSize: 12, color: 'var(--color-text-tertiary)' }}>
+                    {growth.rows_24h_ago !== null ? (() => { const d = fmtDelta(growth.rows_now - growth.rows_24h_ago!); return <span style={{ color: d.color }}>{d.text} rows</span>; })() : 'no baseline'}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Δ 7d</div>
+                  {(() => { const d = fmtDelta(growth.delta_7d, true); return <div style={{ fontSize: 18, fontWeight: 600, color: d.color }}>{d.text}</div>; })()}
+                  <div style={{ fontSize: 12, color: 'var(--color-text-tertiary)' }}>
+                    {growth.rows_7d_ago !== null ? (() => { const d = fmtDelta(growth.rows_now - growth.rows_7d_ago!); return <span style={{ color: d.color }}>{d.text} rows</span>; })() : 'no baseline'}
+                  </div>
+                </div>
+              </div>
+            )}
+
+          </div>
         </div>
 
       </main>

@@ -53,3 +53,32 @@ model AuditEvent {
 
   application Application? @relation(fields: [applicationId], references: [id], onDelete: SetNull)
 }
+
+// Periodic snapshot of per-table stats. Powers sparklines, size/growth
+// deltas, heatmaps, and idle-app detection.
+model TableSnapshot {
+  id            String   @id @default(cuid())
+  applicationId String
+  tableName     String
+  observedAt    DateTime @default(now())
+  rowCount      BigInt
+  sizeBytes     BigInt
+  inserts       BigInt   // cumulative
+  updates       BigInt   // cumulative
+  deletes       BigInt   // cumulative
+
+  @@index([applicationId, tableName, observedAt])
+  @@index([observedAt])
+}
+
+// Periodic snapshot of per-table column list. Powers schema diff log.
+model ColumnSnapshot {
+  id            String   @id @default(cuid())
+  applicationId String
+  tableName     String
+  observedAt    DateTime @default(now())
+  columnsHash   String   // sha256 of serialized columns for quick change detection
+  columns       String   // JSON array of { name, data_type, is_nullable, is_pk }
+
+  @@index([applicationId, tableName, observedAt])
+}

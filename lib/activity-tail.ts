@@ -1,5 +1,6 @@
 import { Client } from 'pg';
 import { prisma } from './db';
+import { startSnapshotter } from './snapshots';
 
 export interface ActivityEvent {
   id: string;          // monotonically increasing per-process id
@@ -110,6 +111,7 @@ function startPoller(): void {
 
 export function getRecentActivity(limit = 20): { events: ActivityEvent[]; poller_started: boolean } {
   startPoller();
+  startSnapshotter();
   return {
     events: buffer.slice(0, Math.max(1, Math.min(limit, BUFFER_CAP))),
     poller_started: pollerStarted,
