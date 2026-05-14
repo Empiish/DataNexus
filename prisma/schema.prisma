@@ -36,11 +36,14 @@ model ConnectionKey {
   keyHash       String    @unique
   keyPrefix     String
   label         String?
+  scopes        String?   // JSON array of capability strings, e.g. ["vault:read","vault:use"]
   createdAt     DateTime  @default(now())
   lastUsedAt    DateTime?
   revokedAt     DateTime?
 
   application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([keyPrefix])
 }
 
 model AuditEvent {
