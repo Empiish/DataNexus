@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 // L-409 finding #1 — app-level backstop to the network posture.
+// (Next 16 renamed the `middleware` file convention to `proxy`; same role.)
 //
 // Operator decision (2026-05-17): the DataNexus control plane is Tailnet-only.
 // Caddy's public host (datanexus.78.46.200.161.sslip.io) reverse-proxies ONLY
@@ -12,8 +13,8 @@ import { NextRequest, NextResponse } from 'next/server';
 // was misconfigured to expose it — refuse (mirror Caddy's own 404). An
 // unmarked control-plane request can only have arrived Tailnet-direct (the
 // trusted operator) and passes through. The firewall + Caddy allowlist are the
-// real boundary; this middleware is defense-in-depth against an ingress
-// misconfiguration, not a substitute for it.
+// real boundary; this is defense-in-depth against an ingress misconfiguration,
+// not a substitute for it.
 
 const EDGE_MARKER = 'x-dn-edge';
 
@@ -29,7 +30,7 @@ const EDGE_ALLOWED = new Set<string>([
   '/api/v1/query',
 ]);
 
-export function middleware(req: NextRequest) {
+export function proxy(req: NextRequest) {
   const path = req.nextUrl.pathname;
   if (EDGE_ALLOWED.has(path)) return NextResponse.next();
 
