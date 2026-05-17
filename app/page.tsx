@@ -46,6 +46,7 @@ interface Overview {
 interface ConnRow { user: string | null; app: string; connections: number; active: number }
 interface Alert { id: string; severity: 'info' | 'warning' | 'error'; kind: string; app: string; message: string; ts: string }
 interface SourceRow { id: string; label: string; type: 'postgres_schema' | 'vault'; status: 'ok' | 'empty' | 'unreachable'; size_bytes: number; summary: string; detail: string }
+interface AppHealth { slug: string; name: string; status: string; schema: string; size_bytes: number; tables: number; rows: number; connections: number; active_connections: number; last_seen_at: string | null; last_write_at: string | null; is_idle: boolean; days_idle: number | null }
 
 function timeAgoShort(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime();
@@ -152,6 +153,7 @@ export default function Dashboard() {
   const [conns, setConns] = useState<ConnRow[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [sources, setSources] = useState<SourceRow[]>([]);
+  const [appHealth, setAppHealth] = useState<AppHealth[]>([]);
 
   useEffect(() => {
     fetch('/api/v1/apps')
@@ -168,6 +170,7 @@ export default function Dashboard() {
       fetch('/api/v1/connections').then((r) => (r.ok ? r.json() : null)).then((d) => { if (d) setConns(d.by_app ?? []); }).catch(() => {});
       fetch('/api/v1/alerts').then((r) => (r.ok ? r.json() : null)).then((d) => { if (d) setAlerts(d.alerts ?? []); }).catch(() => {});
       fetch('/api/v1/sources').then((r) => (r.ok ? r.json() : null)).then((d) => { if (d) setSources(d.sources ?? []); }).catch(() => {});
+      fetch('/api/v1/app-health').then((r) => (r.ok ? r.json() : null)).then((d) => { if (d) setAppHealth(d.apps ?? []); }).catch(() => {});
     };
     slow();
     const st = setInterval(slow, 20_000);
@@ -263,6 +266,66 @@ export default function Dashboard() {
 
         <div className="dash-grid">
           <div className="section-gap">
+            {/* Applications health — complete per-app fused view (L-414) */}
+            <div className="card">
+              <div className="card-header">
+                <h2>Applications health</h2>
+                <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
+                  {appHealth.length} app{appHealth.length === 1 ? '' : 's'} · every registered app
+                </span>
+              </div>
+              {appHealth.length === 0 ? (
+                <div className="empty-state">Loading…</div>
+              ) : (
+                <table>
+                  <thead>
+                    <tr>
+                      <th>App</th><th>Status</th>
+                      <th style={{ textAlign: 'right' }}>Size</th>
+                      <th style={{ textAlign: 'right' }}>Conns</th>
+                      <th>Last seen</th><th>Activity</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {appHealth.map((a) => (
+                      <tr key={a.slug}>
+                        <td>
+                          <Link href={`/apps/${a.slug}`} style={{ color: 'var(--color-accent)', textDecoration: 'none', fontWeight: 500 }}>{a.name}</Link>
+                          <div className="mono" style={{ fontSize: 11, color: 'var(--color-text-tertiary)', marginTop: 2 }}>{a.schema}</div>
+                        </td>
+                        <td><span className={`badge badge-${a.status}`}>{a.status}</span></td>
+                        <td style={{ textAlign: 'right' }}>
+                          {a.tables > 0 ? (
+                            <>
+                              <span style={{ fontWeight: 600 }}>{fmtBytes(a.size_bytes)}</span>
+                              <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', marginTop: 2 }}>{a.tables}t · {fmtNum(a.rows)}r</div>
+                            </>
+                          ) : (
+                            <span style={{ color: 'var(--color-text-tertiary)' }}>— identity-only</span>
+                          )}
+                        </td>
+                        <td style={{ textAlign: 'right', color: a.connections > 0 ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)' }}>
+                          {a.connections > 0 ? `${a.active_connections}/${a.connections}` : '—'}
+                        </td>
+                        <td style={{ color: 'var(--color-text-tertiary)', fontSize: 12 }} title={a.last_seen_at ?? ''}>
+                          {a.last_seen_at ? `${timeAgoShort(a.last_seen_at)} ago` : 'never'}
+                        </td>
+                        <td style={{ fontSize: 12 }}>
+                          {a.is_idle ? (
+                            <span style={{ color: 'var(--color-warning)' }}>idle {a.days_idle ?? '?'}d</span>
+                          ) : a.last_write_at ? (
+                            <span style={{ color: 'var(--color-text-secondary)' }}>{timeAgoShort(a.last_write_at)} ago</span>
+                          ) : (
+                            <span style={{ color: 'var(--color-text-tertiary)' }}>no writes</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
             <div className="card">
               <div className="card-header">
                 <h2>Write throughput</h2>
