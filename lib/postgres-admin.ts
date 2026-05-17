@@ -16,6 +16,11 @@ export async function provisionAppSchema(slug: string, password: string) {
     await client.query(`GRANT CREATE ON SCHEMA "${schema}" TO "${user}"`);
     await client.query(`ALTER DEFAULT PRIVILEGES IN SCHEMA "${schema}" GRANT ALL ON TABLES TO "${user}"`);
     await client.query(`ALTER DEFAULT PRIVILEGES IN SCHEMA "${schema}" GRANT ALL ON SEQUENCES TO "${user}"`);
+    // L-388 Phase 1: grant the per-app role TO the admin login role so the
+    // query proxy (which connects as DATABASE_URL) can `SET ROLE` to it even
+    // when DATABASE_URL is not a superuser. Existing roles need a one-off
+    // backfill GRANT at deploy time (see L-388 runbook).
+    await client.query(`GRANT "${user}" TO CURRENT_USER`);
   } finally {
     await client.end();
   }
