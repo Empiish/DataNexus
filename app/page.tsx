@@ -45,6 +45,7 @@ interface Overview {
 
 interface ConnRow { user: string | null; app: string; connections: number; active: number }
 interface Alert { id: string; severity: 'info' | 'warning' | 'error'; kind: string; app: string; message: string; ts: string }
+interface SourceRow { id: string; label: string; type: 'postgres_schema' | 'vault'; status: 'ok' | 'empty' | 'unreachable'; size_bytes: number; summary: string; detail: string }
 
 function timeAgoShort(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime();
@@ -150,6 +151,7 @@ export default function Dashboard() {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [conns, setConns] = useState<ConnRow[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
+  const [sources, setSources] = useState<SourceRow[]>([]);
 
   useEffect(() => {
     fetch('/api/v1/apps')
@@ -165,6 +167,7 @@ export default function Dashboard() {
       fetch('/api/v1/overview').then((r) => (r.ok ? r.json() : null)).then((d) => { if (d) setOverview(d); }).catch(() => {});
       fetch('/api/v1/connections').then((r) => (r.ok ? r.json() : null)).then((d) => { if (d) setConns(d.by_app ?? []); }).catch(() => {});
       fetch('/api/v1/alerts').then((r) => (r.ok ? r.json() : null)).then((d) => { if (d) setAlerts(d.alerts ?? []); }).catch(() => {});
+      fetch('/api/v1/sources').then((r) => (r.ok ? r.json() : null)).then((d) => { if (d) setSources(d.sources ?? []); }).catch(() => {});
     };
     slow();
     const st = setInterval(slow, 20_000);
@@ -320,6 +323,45 @@ export default function Dashboard() {
                         <td><span className="mono">{c.user}</span></td>
                         <td style={{ textAlign: 'right' }}>{c.active}</td>
                         <td style={{ textAlign: 'right', fontWeight: 600 }}>{c.connections}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            {/* Data sources — federated read-only view (L-411) */}
+            <div className="card">
+              <div className="card-header">
+                <h2>Data sources</h2>
+                <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
+                  {sources.length} source{sources.length === 1 ? '' : 's'} · federated, read-only
+                </span>
+              </div>
+              {sources.length === 0 ? (
+                <div className="empty-state">Loading…</div>
+              ) : (
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Source</th><th>Type</th><th>Status</th>
+                      <th style={{ textAlign: 'right' }}>Size</th><th>Detail</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sources.map((s) => (
+                      <tr key={s.id}>
+                        <td>
+                          <span style={{ color: 'var(--color-text-primary)', fontWeight: 500 }}>{s.label}</span>
+                          <div className="mono" style={{ fontSize: 11, color: 'var(--color-text-tertiary)', marginTop: 2 }}>{s.detail}</div>
+                        </td>
+                        <td><span className="badge" style={{ background: 'var(--color-bg-tertiary)', color: 'var(--color-text-secondary)' }}>{s.type === 'vault' ? 'Vault' : 'PG schema'}</span></td>
+                        <td>
+                          <span className={`dot ${s.status === 'ok' ? 'dot-ok' : s.status === 'empty' ? 'dot-idle' : 'dot-err'}`} style={{ display: 'inline-block', marginRight: 6, verticalAlign: 'middle' }} />
+                          <span style={{ fontSize: 12, color: s.status === 'unreachable' ? 'var(--color-error)' : 'var(--color-text-secondary)' }}>{s.status}</span>
+                        </td>
+                        <td style={{ textAlign: 'right', fontWeight: 600 }}>{s.size_bytes > 0 ? fmtBytes(s.size_bytes) : '—'}</td>
+                        <td style={{ color: 'var(--color-text-tertiary)', fontSize: 12 }}>{s.summary}</td>
                       </tr>
                     ))}
                   </tbody>
