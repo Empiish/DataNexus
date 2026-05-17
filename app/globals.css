@@ -143,8 +143,7 @@ body {
   gap: 14px;
   padding: 0 20px;
   border-bottom: 1px solid var(--color-border);
-  background: rgba(14, 19, 32, 0.7);
-  backdrop-filter: blur(6px);
+  background: var(--color-bg-secondary);
 }
 .topbar-search {
   flex: 1;
