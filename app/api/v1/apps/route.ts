@@ -28,7 +28,7 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { name, description, created_by = 'operator' } = body;
+    const { name, description, created_by = 'operator', reason } = body;
 
     if (!name || typeof name !== 'string') return apiError('name is required', 400);
 
@@ -57,7 +57,12 @@ export async function POST(req: NextRequest) {
     });
 
     await prisma.auditEvent.create({
-      data: { applicationId: app.id, eventType: 'registered', actor: created_by, metadata: JSON.stringify({ slug, schema }) },
+      data: {
+        applicationId: app.id,
+        eventType: 'registered',
+        actor: created_by,
+        metadata: JSON.stringify({ slug, schema, ...(reason ? { reason } : {}) }),
+      },
     });
 
     return Response.json({
