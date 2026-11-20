@@ -1,12 +1,15 @@
 import { Client } from 'pg';
 import { prisma } from '@/lib/db';
+import { requireAdmin } from '@/lib/admin-auth';
 
 export const dynamic = 'force-dynamic';
 
 // L-408: live connection count per application, from the real pg_stat_activity
 // view grouped by login role (each app connects as its app_<slug> role).
 // Read-only; control-plane (Tailnet-only per L-409).
-export async function GET() {
+export async function GET(req: Request) {
+  const denied = requireAdmin(req);
+  if (denied) return denied;
   const client = new Client({ connectionString: process.env.DATABASE_URL });
   await client.connect();
   let rows: Array<{ usename: string | null; cnt: number; active: number }> = [];

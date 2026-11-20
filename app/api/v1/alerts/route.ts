@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/db';
 import { getIdleAppStatus, getSchemaDiffLog } from '@/lib/snapshots';
+import { requireAdmin } from '@/lib/admin-auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,7 +17,9 @@ interface Alert {
 // L-408: alerts synthesized from signals DataNexus already has — idle apps,
 // schema drift, non-active apps, stale key activity. No new alerting subsystem,
 // no fabricated entries. Read-only; control-plane (Tailnet-only per L-409).
-export async function GET() {
+export async function GET(req: Request) {
+  const denied = requireAdmin(req);
+  if (denied) return denied;
   const now = Date.now();
   const apps = await prisma.application.findMany({
     select: { id: true, name: true, status: true, lastSeenAt: true },

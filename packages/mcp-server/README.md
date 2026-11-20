@@ -1,6 +1,6 @@
 # DataNexus MCP server
 
-Stdio MCP that **mediates every DataNexus write** with a mandatory `reason` string. Reads are free. Mutations auto-execute (no interactive approval prompt — the assumption is Claude is trusted on this operator's Tailnet) but **land on `/audit` with the reason attached**. The trail is the accountability.
+Stdio MCP that **mediates every DataNexus write** with a mandatory `reason` string. Reads need no reason. Mutations auto-execute (no interactive approval prompt — whoever holds the admin token is the trusted operator) but **land on `/audit` with the reason attached**. The trail is the accountability.
 
 ## Install
 
@@ -20,15 +20,15 @@ Add to `~/.claude.json` under `mcpServers`, then restart Claude Code:
       "command": "node",
       "args": ["<absolute path>/datanexus/packages/mcp-server/index.mjs"],
       "env": {
-        "DATANEXUS_URL": "http://nos-server-01-ts:4000"
-        // "DATANEXUS_ADMIN_KEY": "dn_..."  // only if you're NOT on the Tailnet
+        "DATANEXUS_URL": "http://nos-server-01-ts:4000",
+        "DATANEXUS_ADMIN_TOKEN": "<same value as the server's DATANEXUS_ADMIN_TOKEN>"
       }
     }
   }
 }
 ```
 
-The control plane is Tailnet-only (see L-409). From the Tailnet the network-trusted operator principal applies, so no `dn_` key is required. Off-Tailnet, provide `DATANEXUS_ADMIN_KEY` (a `dn_` key with the `datanexus:admin` scope) as a fallback.
+`DATANEXUS_ADMIN_TOKEN` is **required**. Every call sends it as `Authorization: Bearer <token>`; the server answers 401 without it (and 503 if the server itself has no token configured). The control plane is also Tailnet-only (see L-409), but network position is no longer treated as authentication. Keep the token out of git; `dn_` keys are NOT accepted as admin credentials.
 
 ## Tools
 

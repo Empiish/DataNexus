@@ -2,8 +2,11 @@ import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/db';
 import { generateApiKey, buildConnectionString, generateDbPassword } from '@/lib/keygen';
 import { apiError, notFound } from '@/lib/errors';
+import { requireAdmin } from '@/lib/admin-auth';
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const denied = requireAdmin(req);
+  if (denied) return denied;
   const { id } = await params;
   const app = await prisma.application.findFirst({ where: { OR: [{ id }, { slug: id }] } });
   if (!app) return notFound('Application');
@@ -36,6 +39,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 }
 
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const denied = requireAdmin(req);
+  if (denied) return denied;
   const { id } = await params;
   const app = await prisma.application.findFirst({ where: { OR: [{ id }, { slug: id }] } });
   if (!app) return notFound('Application');
