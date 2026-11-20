@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test:auth": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test scripts/test-admin-auth.mjs",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:migrate": "prisma migrate deploy",

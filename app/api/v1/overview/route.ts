@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/db';
 import { getIdleAppStatus } from '@/lib/snapshots';
 import { getRecentActivity } from '@/lib/activity-tail';
+import { requireAdmin } from '@/lib/admin-auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -8,7 +9,9 @@ export const dynamic = 'force-dynamic';
 // donut, write-throughput chart, composite system health). Every field traces
 // to a real query — no fabricated metrics. Control-plane read (Tailnet-only
 // per L-409); no new auth surface.
-export async function GET() {
+export async function GET(req: Request) {
+  const denied = requireAdmin(req);
+  if (denied) return denied;
   const now = Date.now();
 
   let pgOk = true;

@@ -2,8 +2,11 @@ import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/db';
 import { dropAppSchema } from '@/lib/postgres-admin';
 import { apiError, notFound } from '@/lib/errors';
+import { requireAdmin } from '@/lib/admin-auth';
 
-export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const denied = requireAdmin(req);
+  if (denied) return denied;
   const { id } = await params;
   const app = await prisma.application.findFirst({
     where: { OR: [{ id }, { slug: id }] },
@@ -45,27 +48,48 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 }
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const denied = requireAdmin(req);
+  if (denied) return denied;
   const { id } = await params;
   const app = await prisma.application.findFirst({ where: { OR: [{ id }, { slug: id }] } });
   if (!app) return notFound('Application');
 
   const body = await req.json();
+  const { description, status, reason, actor = 'operator' } = body;
+  const changes: Record<string, unknown> = {};
+  if (description !== undefined && description !== app.description) changes.description = description;
+  if (status !== undefined && status !== app.status) changes.status = status;
+
   const updated = await prisma.application.update({
     where: { id: app.id },
     data: {
-      ...(body.description !== undefined && { description: body.description }),
-      ...(body.status !== undefined && { status: body.status }),
+      ...(description !== undefined && { description }),
+      ...(status !== undefined && { status }),
     },
   });
+
+  if (Object.keys(changes).length > 0) {
+    await prisma.auditEvent.create({
+      data: {
+        applicationId: app.id,
+        eventType: 'updated',
+        actor,
+        metadata: JSON.stringify({ changes, ...(reason ? { reason } : {}) }),
+      },
+    });
+  }
+
   return Response.json({ id: updated.id, status: updated.status, description: updated.description });
 }
 
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const denied = requireAdmin(req);
+  if (denied) return denied;
   const { id } = await params;
   const app = await prisma.application.findFirst({ where: { OR: [{ id }, { slug: id }] } });
   if (!app) return notFound('Application');
 
-  const { drop_schema = false, actor = 'operator' } = await req.json().catch(() => ({}));
+  const { drop_schema = false, actor = 'operator', reason } = await req.json().catch(() => ({}));
 
   if (drop_schema) {
     await dropAppSchema(app.slug);
@@ -76,7 +100,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
       applicationId: app.id,
       eventType: 'disconnected',
       actor,
-      metadata: JSON.stringify({ drop_schema }),
+      metadata: JSON.stringify({ drop_schema, ...(reason ? { reason } : {}) }),
     },
   });
 
