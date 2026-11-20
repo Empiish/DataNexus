@@ -8,20 +8,24 @@
 // them into AuditEvent.metadata).
 //
 // Config (env):
-//   DATANEXUS_URL       — default http://nos-server-01-ts:4000 (Tailnet)
-//   DATANEXUS_ADMIN_KEY — optional Bearer; only needed off-Tailnet
-//                         (control-plane is Tailnet-trusted; see L-409)
+//   DATANEXUS_URL         — default http://nos-server-01-ts:4000 (Tailnet)
+//   DATANEXUS_ADMIN_TOKEN — REQUIRED. Sent as `Authorization: Bearer <token>`;
+//                           must equal the server's DATANEXUS_ADMIN_TOKEN.
+//                           The control plane rejects every request without it
+//                           (401), and answers 503 if the server has none set.
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 
 const DN_URL = (process.env.DATANEXUS_URL || 'http://nos-server-01-ts:4000').replace(/\/+$/, '');
-const DN_KEY = process.env.DATANEXUS_ADMIN_KEY || '';
+const DN_TOKEN = (process.env.DATANEXUS_ADMIN_TOKEN || '').trim();
 
 async function dn(method, path, body) {
-  const headers = { 'content-type': 'application/json' };
-  if (DN_KEY) headers.authorization = `Bearer ${DN_KEY}`;
+  if (!DN_TOKEN) {
+    throw new Error('DATANEXUS_ADMIN_TOKEN is not set: add it to this MCP server\'s env (same value as the DataNexus server\'s DATANEXUS_ADMIN_TOKEN).');
+  }
+  const headers = { 'content-type': 'application/json', authorization: `Bearer ${DN_TOKEN}` };
   const res = await fetch(`${DN_URL}${path}`, {
     method,
     headers,
