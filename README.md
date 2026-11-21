@@ -12,6 +12,30 @@ DataNexus has two API surfaces with different credentials.
 | `POST /api/v1/auth/verify` | `dn_` key in the JSON body (Pandora and sibling apps use this) |
 | `POST /api/v1/query` | `Authorization: Bearer dn_...` |
 
+**How `/api/v1/query` isolates apps.** The caller's SQL never runs in the `DATABASE_URL`
+(superuser) session. DataNexus logs in to Postgres as the app's own query role
+`dnq_app_<slug>` and then runs `SET ROLE app_<slug>`:
+
+- `dnq_app_<slug>` is `LOGIN NOINHERIT`, with no elevated attributes, and is a member of
+  `app_<slug>` only (`WITH INHERIT FALSE, SET TRUE`). If the caller's SQL runs `RESET ROLE`,
+  it lands on a role that has no privileges and can only switch back to `app_<slug>`. The old
+  "superuser session + `SET ROLE`" model could be undone that way (security review DN-1, 2026-11-21).
+- The role is created on first use (`lib/query-roles.ts`). Its password is derived from
+  `DATANEXUS_QUERY_ROLE_SECRET`, so DataNexus stores no per-app DB passwords. Postgres only
+  ever receives a SCRAM verifier.
+- Setup refuses an app role that is `SUPERUSER`, `CREATEROLE`, `REPLICATION` or `BYPASSRLS`,
+  or that is a member of any other role.
+- One statement per request (extended protocol). Each request gets `statement_timeout`
+  (`DATANEXUS_QUERY_STATEMENT_TIMEOUT_MS`, default 30 s). Each app may hold at most
+  `DATANEXUS_QUERY_CONNECTION_LIMIT` connections (default 5); beyond that, `429`.
+- Each request writes one log line (`dn.query`): key id, app, a hash of the SQL (never the SQL or
+  its params), duration, rows, error code.
+
+Env: `DATANEXUS_QUERY_ROLE_SECRET` must be at least 32 random characters. Without it,
+`/api/v1/query` answers `503` (fails closed). Changing the secret is safe: on the next login
+failure DataNexus resets each query role's password. Check the isolation against a throwaway
+Postgres with `scripts/verify-query-isolation.mjs` (see its header).
+
 **Control plane (everything else under `/api/`).** Creating, changing, listing or deleting apps; minting, listing or revoking keys; audit log; schema, row previews, activity, connections, sources, overview, pulse, alerts, app-health. Every request needs:
 
 ```
