@@ -1,19 +1,106 @@
 import { NextRequest } from 'next/server';
-import { Client } from 'pg';
+import { createHash } from 'node:crypto';
+import { Client, type QueryConfig } from 'pg';
 import { verifyKey } from '@/lib/auth';
 import { apiError } from '@/lib/errors';
+import {
+  NOT_CONFIGURED_MESSAGE,
+  QueryRoleError,
+  ensureQueryRole,
+  getQueryRoleSecret,
+  pgCode,
+  queryRoleConnectionString,
+  queryRoleName,
+  queryRolePassword,
+  type SqlExec,
+} from '@/lib/query-roles';
+
+// Data plane: run one SQL statement for the app that owns the dn_ key.
+//
+// Isolation (security review DN-1, 2026-11-21): the tenant's SQL runs in a
+// session that LOGGED IN as the app's query role (dnq_app_<slug>, see
+// lib/query-roles.ts), never in a DATABASE_URL (superuser) session. The old
+// "connect as superuser, then SET ROLE app_<slug>" could be undone by the
+// tenant's own SQL (RESET ROLE / set_config('role', ...)), so any key could
+// read every schema, pg_authid and ConnectionKey.
+//
+// Also:
+//  - extended protocol only: one statement per request;
+//  - statement_timeout + a per-app CONNECTION LIMIT on the role, so one key
+//    cannot exhaust the cluster's connections;
+//  - one log line per request: key id, app, a hash of the SQL (never the SQL
+//    text or params), duration, row count, error code.
+
+const ENSURE_TTL_MS = 10 * 60 * 1000;
+const ensuredUntil = new Map<string, number>();
+
+function statementTimeoutMs(): number {
+  const n = Number(process.env.DATANEXUS_QUERY_STATEMENT_TIMEOUT_MS ?? 30_000);
+  return Number.isFinite(n) && n >= 1_000 && n <= 300_000 ? Math.floor(n) : 30_000;
+}
+
+/** Run `fn` on a short-lived DATABASE_URL connection. Used ONLY for role setup, never for tenant SQL. */
+async function withAdmin<T>(databaseUrl: string, fn: (exec: SqlExec) => Promise<T>): Promise<T> {
+  const admin = new Client({ connectionString: databaseUrl, application_name: 'datanexus-query-setup' });
+  await admin.connect();
+  try {
+    return await fn((text, values) => admin.query(text, values));
+  } finally {
+    await admin.end();
+  }
+}
+
+async function ensureRole(databaseUrl: string, schemaName: string, secret: string, resetPassword: boolean) {
+  const r = await withAdmin(databaseUrl, (exec) => ensureQueryRole(exec, schemaName, secret, { resetPassword }));
+  ensuredUntil.set(schemaName, Date.now() + ENSURE_TTL_MS);
+  if (r.created || r.passwordReset) {
+    console.info(JSON.stringify({ event: 'dn.query_role', schema: schemaName, created: r.created, password_reset: r.passwordReset }));
+  }
+}
+
+/** Connect as the app's query role; repair the role once if login fails (missing role or rotated secret). */
+async function connectAsQueryRole(databaseUrl: string, schemaName: string, secret: string): Promise<Client> {
+  const role = queryRoleName(schemaName);
+  const timeout = statementTimeoutMs();
+  const open = async () => {
+    const client = new Client({
+      connectionString: queryRoleConnectionString(databaseUrl, role, queryRolePassword(secret, role)),
+      statement_timeout: timeout,
+      idle_in_transaction_session_timeout: timeout,
+      query_timeout: timeout + 5_000,
+      connectionTimeoutMillis: 10_000,
+      application_name: 'datanexus-query',
+    });
+    await client.connect();
+    return client;
+  };
+
+  if ((ensuredUntil.get(schemaName) ?? 0) <= Date.now()) {
+    await ensureRole(databaseUrl, schemaName, secret, false);
+  }
+  try {
+    return await open();
+  } catch (err) {
+    const code = pgCode(err);
+    // 28P01 invalid_password (also what Postgres reports for a missing role), 28000 invalid authorization.
+    if (code !== '28P01' && code !== '28000') throw err;
+  }
+  await ensureRole(databaseUrl, schemaName, secret, true);
+  return open();
+}
 
 export async function POST(req: NextRequest) {
-  // --- Auth (L-409 #3): shared verifyKey with a 60s TTL. The old in-process
-  // {hash,schemaName} map never expired, so a revoked key kept working until
-  // process restart. verifyKey re-checks the DB (revokedAt:null + app active)
-  // at most every 60s. ---
+  // --- Auth (L-409 #3): shared verifyKey with a 60s TTL. ---
   const auth = req.headers.get('authorization') ?? '';
   if (!auth.startsWith('Bearer ')) return apiError('Missing Bearer token', 401);
 
   const outcome = await verifyKey(auth.slice(7));
   if (outcome.kind !== 'ok') return apiError('Invalid API key', 401);
-  const { schemaName } = outcome;
+  const { schemaName, principal } = outcome;
+
+  const secret = getQueryRoleSecret();
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!secret || !databaseUrl) return apiError(NOT_CONFIGURED_MESSAGE, 503);
 
   // --- Parse body ---
   let body: { sql?: unknown; params?: unknown };
@@ -27,25 +114,51 @@ export async function POST(req: NextRequest) {
   if (typeof sql !== 'string' || !sql.trim()) return apiError('sql is required', 400);
   if (params !== undefined && !Array.isArray(params)) return apiError('params must be an array', 400);
 
-  // --- Execute (L-388 Phase 1): drop from the datanexus_admin connection to
-  // the caller's own least-privilege role BEFORE running tenant SQL. Previously
-  // search_path was the ONLY isolation, so a tenant key could read any schema
-  // (incl. datanexus."ConnectionKey"). SET ROLE confines the session to the
-  // app_<slug> role's grants; SET search_path keeps unqualified names working.
-  // schemaName == role name == app_<slug> (set at provision; slug is
-  // sanitized to [a-z0-9_], safe as an identifier). Per-request client is
-  // closed in finally (implicit RESET). ---
-  const client = new Client({ connectionString: process.env.DATABASE_URL });
-  await client.connect();
+  const started = Date.now();
+  const logLine = (fields: Record<string, unknown>) =>
+    console.info(JSON.stringify({
+      event: 'dn.query',
+      key_id: principal.key_id,
+      app: principal.slug,
+      sql_sha256: createHash('sha256').update(sql).digest('hex').slice(0, 16),
+      ms: Date.now() - started,
+      ...fields,
+    }));
+
+  // --- Connect as the app's own query role ---
+  let client: Client;
+  try {
+    client = await connectAsQueryRole(databaseUrl, schemaName, secret);
+  } catch (err: unknown) {
+    const code = pgCode(err);
+    logLine({ error: code ?? 'connect_failed' });
+    if (code === '53300') return apiError('Too many concurrent queries for this app; retry shortly', 429);
+    // Details (role names, failed checks) go to the server log, not to the caller.
+    console.error(JSON.stringify({
+      event: 'dn.query_connect_failed',
+      schema: schemaName,
+      error: err instanceof QueryRoleError ? err.message : code ?? (err instanceof Error ? err.message : String(err)),
+    }));
+    return apiError('Query service unavailable for this app', 503);
+  }
+
+  // --- Execute ---
+  // The session user is dnq_<schema> (no privileges of its own). SET ROLE to
+  // the app role so objects the tenant creates stay owned by app_<slug>, as
+  // before. schemaName passed queryRoleName()'s [a-z0-9_] check, so it is safe
+  // as a quoted identifier. The client is per request and closed in finally.
   try {
     await client.query(`SET ROLE "${schemaName}"`);
     await client.query(`SET search_path TO "${schemaName}"`);
-    const result = await client.query(sql, (params as unknown[]) ?? []);
+    const query = { text: sql, values: (params as unknown[] | undefined) ?? [], queryMode: 'extended' } as QueryConfig;
+    const result = await client.query(query);
+    logLine({ rows: result.rowCount ?? result.rows.length });
     return Response.json({ rows: result.rows });
   } catch (err: unknown) {
+    logLine({ error: pgCode(err) ?? 'query_failed' });
     const msg = err instanceof Error ? err.message : 'Query failed';
     return apiError(msg, 400);
   } finally {
-    await client.end();
+    await client.end().catch(() => {});
   }
 }
