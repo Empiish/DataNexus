@@ -104,13 +104,14 @@ type RoleRow = {
   rolbypassrls: boolean;
   rolinherit: boolean;
   rolcanlogin: boolean;
+  rolconnlimit: number;
   member_of: string[] | null;
 };
 
 async function loadRole(exec: SqlExec, name: string): Promise<RoleRow | null> {
   const { rows } = await exec(
     `SELECT r.rolsuper, r.rolcreaterole, r.rolcreatedb, r.rolreplication, r.rolbypassrls,
-            r.rolinherit, r.rolcanlogin,
+            r.rolinherit, r.rolcanlogin, r.rolconnlimit,
             ARRAY(SELECT DISTINCT g.rolname::text FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid
                    WHERE m.member = r.oid ORDER BY 1) AS member_of
        FROM pg_roles r WHERE r.rolname = $1`,
@@ -120,7 +121,10 @@ async function loadRole(exec: SqlExec, name: string): Promise<RoleRow | null> {
 }
 
 /** Problems that make it unsafe to hand an app role to a tenant session. Empty = safe. */
-export async function checkQueryRoleSetup(exec: SqlExec, schemaName: string): Promise<{ queryRoleExists: boolean; problems: string[] }> {
+export async function checkQueryRoleSetup(
+  exec: SqlExec,
+  schemaName: string,
+): Promise<{ queryRoleExists: boolean; queryRoleConnLimit: number | null; problems: string[] }> {
   const role = queryRoleName(schemaName);
   const problems: string[] = [];
 
@@ -147,7 +151,7 @@ export async function checkQueryRoleSetup(exec: SqlExec, schemaName: string): Pr
       problems.push(`query role ${role} must be a member of exactly ${schemaName} (is: ${memberOf.join(', ') || 'none'})`);
     }
   }
-  return { queryRoleExists: !!q, problems };
+  return { queryRoleExists: !!q, queryRoleConnLimit: q ? Number(q.rolconnlimit) : null, problems };
 }
 
 /** SQLSTATE of a pg error, if any. */
@@ -167,7 +171,7 @@ export async function ensureQueryRole(
   schemaName: string,
   secret: string,
   opts: { resetPassword?: boolean } = {},
-): Promise<{ created: boolean; passwordReset: boolean }> {
+): Promise<{ created: boolean; passwordReset: boolean; limitChanged?: boolean }> {
   const role = queryRoleName(schemaName);
   const before = await checkQueryRoleSetup(exec, schemaName);
   if (before.problems.length) throw new QueryRoleError(`refusing query role setup: ${before.problems.join('; ')}`);
@@ -177,7 +181,15 @@ export async function ensureQueryRole(
   const attrs = `LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT ${limit}`;
 
   if (before.queryRoleExists) {
-    if (!opts.resetPassword) return { created: false, passwordReset: false };
+    if (!opts.resetPassword) {
+      // 2026-11-28: keep DATANEXUS_QUERY_CONNECTION_LIMIT authoritative for roles that already exist (it used to
+      // apply only at creation or a password reset). Checked on every ensure (route: every 10 minutes per app).
+      if (before.queryRoleConnLimit !== limit) {
+        await exec(`ALTER ROLE "${role}" CONNECTION LIMIT ${limit}`);
+        return { created: false, passwordReset: false, limitChanged: true };
+      }
+      return { created: false, passwordReset: false };
+    }
     await exec(`ALTER ROLE "${role}" WITH ${attrs} PASSWORD '${verifier}'`);
     return { created: false, passwordReset: true };
   }

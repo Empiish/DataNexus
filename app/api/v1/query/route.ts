@@ -9,11 +9,18 @@ import {
   ensureQueryRole,
   getQueryRoleSecret,
   pgCode,
+  queryRoleConnectionLimit,
   queryRoleConnectionString,
   queryRoleName,
   queryRolePassword,
   type SqlExec,
 } from '@/lib/query-roles';
+import {
+  QuerySlotQueueFullError,
+  acquireQuerySlot,
+  querySlotMaxQueue,
+  querySlotWaitMs,
+} from '@/lib/query-slots';
 
 // Data plane: run one SQL statement for the app that owns the dn_ key.
 //
@@ -28,6 +35,9 @@ import {
 //  - extended protocol only: one statement per request;
 //  - statement_timeout + a per-app CONNECTION LIMIT on the role, so one key
 //    cannot exhaust the cluster's connections;
+//  - a per-app queue in front of that limit (lib/query-slots.ts, 2026-11-28):
+//    a burst bigger than the limit waits for a free connection instead of
+//    failing with 429;
 //  - one log line per request: key id, app, a hash of the SQL (never the SQL
 //    text or params), duration, row count, error code.
 
@@ -53,8 +63,11 @@ async function withAdmin<T>(databaseUrl: string, fn: (exec: SqlExec) => Promise<
 async function ensureRole(databaseUrl: string, schemaName: string, secret: string, resetPassword: boolean) {
   const r = await withAdmin(databaseUrl, (exec) => ensureQueryRole(exec, schemaName, secret, { resetPassword }));
   ensuredUntil.set(schemaName, Date.now() + ENSURE_TTL_MS);
-  if (r.created || r.passwordReset) {
-    console.info(JSON.stringify({ event: 'dn.query_role', schema: schemaName, created: r.created, password_reset: r.passwordReset }));
+  if (r.created || r.passwordReset || r.limitChanged) {
+    console.info(JSON.stringify({
+      event: 'dn.query_role', schema: schemaName, created: r.created, password_reset: r.passwordReset,
+      ...(r.limitChanged ? { connection_limit: queryRoleConnectionLimit() } : {}),
+    }));
   }
 }
 
@@ -115,6 +128,7 @@ export async function POST(req: NextRequest) {
   if (params !== undefined && !Array.isArray(params)) return apiError('params must be an array', 400);
 
   const started = Date.now();
+  let waitMs = 0;
   const logLine = (fields: Record<string, unknown>) =>
     console.info(JSON.stringify({
       event: 'dn.query',
@@ -122,43 +136,76 @@ export async function POST(req: NextRequest) {
       app: principal.slug,
       sql_sha256: createHash('sha256').update(sql).digest('hex').slice(0, 16),
       ms: Date.now() - started,
+      ...(waitMs ? { wait_ms: waitMs } : {}),
       ...fields,
     }));
 
-  // --- Connect as the app's own query role ---
-  let client: Client;
+  // --- Wait for one of this app's connection slots (at most CONNECTION LIMIT at once) ---
+  let release: () => void;
   try {
-    client = await connectAsQueryRole(databaseUrl, schemaName, secret);
+    release = await acquireQuerySlot(schemaName, queryRoleConnectionLimit(), querySlotWaitMs(), querySlotMaxQueue());
   } catch (err: unknown) {
-    const code = pgCode(err);
-    logLine({ error: code ?? 'connect_failed' });
-    if (code === '53300') return apiError('Too many concurrent queries for this app; retry shortly', 429);
-    // Details (role names, failed checks) go to the server log, not to the caller.
-    console.error(JSON.stringify({
-      event: 'dn.query_connect_failed',
-      schema: schemaName,
-      error: err instanceof QueryRoleError ? err.message : code ?? (err instanceof Error ? err.message : String(err)),
-    }));
-    return apiError('Query service unavailable for this app', 503);
+    logLine({ error: err instanceof QuerySlotQueueFullError ? 'queue_full' : 'queue_timeout' });
+    return apiError('Too many concurrent queries for this app; retry shortly', 429);
   }
+  waitMs = Date.now() - started;
 
-  // --- Execute ---
-  // The session user is dnq_<schema> (no privileges of its own). SET ROLE to
-  // the app role so objects the tenant creates stay owned by app_<slug>, as
-  // before. schemaName passed queryRoleName()'s [a-z0-9_] check, so it is safe
-  // as a quoted identifier. The client is per request and closed in finally.
+  // The slot is held until the connection is closed (the inner finally), then handed to the next waiter.
   try {
-    await client.query(`SET ROLE "${schemaName}"`);
-    await client.query(`SET search_path TO "${schemaName}"`);
-    const query = { text: sql, values: (params as unknown[] | undefined) ?? [], queryMode: 'extended' } as QueryConfig;
-    const result = await client.query(query);
-    logLine({ rows: result.rowCount ?? result.rows.length });
-    return Response.json({ rows: result.rows });
-  } catch (err: unknown) {
-    logLine({ error: pgCode(err) ?? 'query_failed' });
-    const msg = err instanceof Error ? err.message : 'Query failed';
-    return apiError(msg, 400);
+    // --- Connect as the app's own query role ---
+    let client: Client;
+    try {
+      client = await connectWithRetry(databaseUrl, schemaName, secret);
+    } catch (err: unknown) {
+      const code = pgCode(err);
+      logLine({ error: code ?? 'connect_failed' });
+      if (code === '53300') return apiError('Too many concurrent queries for this app; retry shortly', 429);
+      // Details (role names, failed checks) go to the server log, not to the caller.
+      console.error(JSON.stringify({
+        event: 'dn.query_connect_failed',
+        schema: schemaName,
+        error: err instanceof QueryRoleError ? err.message : code ?? (err instanceof Error ? err.message : String(err)),
+      }));
+      return apiError('Query service unavailable for this app', 503);
+    }
+
+    // --- Execute ---
+    // The session user is dnq_<schema> (no privileges of its own). SET ROLE to
+    // the app role so objects the tenant creates stay owned by app_<slug>, as
+    // before. schemaName passed queryRoleName()'s [a-z0-9_] check, so it is safe
+    // as a quoted identifier. The client is per request and closed in finally.
+    try {
+      await client.query(`SET ROLE "${schemaName}"`);
+      await client.query(`SET search_path TO "${schemaName}"`);
+      const query = { text: sql, values: (params as unknown[] | undefined) ?? [], queryMode: 'extended' } as QueryConfig;
+      const result = await client.query(query);
+      logLine({ rows: result.rowCount ?? result.rows.length });
+      return Response.json({ rows: result.rows });
+    } catch (err: unknown) {
+      logLine({ error: pgCode(err) ?? 'query_failed' });
+      const msg = err instanceof Error ? err.message : 'Query failed';
+      return apiError(msg, 400);
+    } finally {
+      await client.end().catch(() => {});
+    }
   } finally {
-    await client.end().catch(() => {});
+    release();
+  }
+}
+
+/**
+ * The queue keeps this process within the role's CONNECTION LIMIT, but Postgres
+ * counts a backend until it has fully exited, so a login right after another
+ * request closed can still see the limit for a moment (53300). Retry briefly.
+ */
+async function connectWithRetry(databaseUrl: string, schemaName: string, secret: string): Promise<Client> {
+  const delays = [100, 300];
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await connectAsQueryRole(databaseUrl, schemaName, secret);
+    } catch (err) {
+      if (pgCode(err) !== '53300' || attempt >= delays.length) throw err;
+      await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
+    }
   }
 }
