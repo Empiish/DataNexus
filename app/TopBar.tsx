@@ -18,13 +18,25 @@ export default function TopBar() {
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    // Signed out (or session expired): every control-plane API call now 401s.
+    // Send the operator to /login instead of leaving a dashboard of blanks.
+    if (window.location.pathname === '/login') return;
+    const toLogin = (r: Response) => {
+      if (r.status === 401) {
+        window.location.assign(`/login?next=${encodeURIComponent(window.location.pathname)}`);
+      }
+      return r;
+    };
+
     fetch('/api/v1/apps')
+      .then(toLogin)
       .then((r) => (r.ok ? r.json() : []))
       .then((d: AppRow[]) => setApps(Array.isArray(d) ? d : []))
       .catch(() => {});
 
     const load = () =>
       fetch('/api/v1/overview')
+        .then(toLogin)
         .then((r) => (r.ok ? r.json() : null))
         .then((d) => { if (d?.health) setHealth(d.health); })
         .catch(() => {});
@@ -47,6 +59,11 @@ export default function TopBar() {
     const hit = apps.find((a) => a.slug === v || a.name.toLowerCase() === v) ?? apps.find((a) => a.name.toLowerCase().includes(v) || a.slug.includes(v));
     router.push(hit ? `/apps/${hit.slug}` : '/apps');
     setQ('');
+  };
+
+  const signOut = async () => {
+    await fetch('/api/v1/session', { method: 'DELETE' }).catch(() => {});
+    window.location.assign('/login');
   };
 
   const dotClass = (ok: boolean | undefined) => (ok === undefined ? 'dot-idle' : ok ? 'dot-ok' : 'dot-err');
@@ -76,6 +93,7 @@ export default function TopBar() {
         <span className="seg"><span className={`dot ${dotClass(health?.snapshotter)}`} />Snapshotter</span>
         <span className="seg"><span className={`dot ${dotClass(health?.poller)}`} />Poller</span>
       </div>
+      <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={signOut}>Sign out</button>
       <div className="avatar">DN</div>
     </div>
   );

@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import { requireAdmin } from '@/lib/admin-auth';
 
 /**
  * GET /api/v1/pulse — federated dashboard pulse.
@@ -7,7 +8,9 @@ import { prisma } from '@/lib/db';
  * 15-bucket × 2-minute audit-event sparkline (30 minutes of activity).
  * Consumed by The Nexus SYSTEMS tile.
  */
-export async function GET() {
+export async function GET(req: Request) {
+  const denied = requireAdmin(req);
+  if (denied) return denied;
   try {
     const now = Date.now();
     const SPARK_WINDOW_MS = 30 * 60 * 1000;

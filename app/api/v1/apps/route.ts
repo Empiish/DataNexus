@@ -3,8 +3,11 @@ import { prisma } from '@/lib/db';
 import { provisionAppSchema } from '@/lib/postgres-admin';
 import { generateApiKey, generateDbPassword, buildConnectionString } from '@/lib/keygen';
 import { apiError } from '@/lib/errors';
+import { requireAdmin } from '@/lib/admin-auth';
 
-export async function GET() {
+export async function GET(req: Request) {
+  const denied = requireAdmin(req);
+  if (denied) return denied;
   const apps = await prisma.application.findMany({
     orderBy: { createdAt: 'desc' },
     include: { connectionKeys: { where: { revokedAt: null } } },
@@ -26,9 +29,11 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
+  const denied = requireAdmin(req);
+  if (denied) return denied;
   try {
     const body = await req.json();
-    const { name, description, created_by = 'operator' } = body;
+    const { name, description, created_by = 'operator', reason } = body;
 
     if (!name || typeof name !== 'string') return apiError('name is required', 400);
 
@@ -57,7 +62,12 @@ export async function POST(req: NextRequest) {
     });
 
     await prisma.auditEvent.create({
-      data: { applicationId: app.id, eventType: 'registered', actor: created_by, metadata: JSON.stringify({ slug, schema }) },
+      data: {
+        applicationId: app.id,
+        eventType: 'registered',
+        actor: created_by,
+        metadata: JSON.stringify({ slug, schema, ...(reason ? { reason } : {}) }),
+      },
     });
 
     return Response.json({

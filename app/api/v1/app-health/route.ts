@@ -1,11 +1,14 @@
 import { getAppHealth } from '@/lib/app-health';
+import { requireAdmin } from '@/lib/admin-auth';
 
 export const dynamic = 'force-dynamic';
 
 // L-414: complete per-app health rollup. Control-plane read (Tailnet-only per
 // L-409 — proxy.ts gates it; not in the public allowlist). Read-only, composes
 // existing data; no schema change, no new auth surface.
-export async function GET() {
+export async function GET(req: Request) {
+  const denied = requireAdmin(req);
+  if (denied) return denied;
   const apps = await getAppHealth();
   return Response.json({ apps, generated_at: new Date().toISOString() });
 }

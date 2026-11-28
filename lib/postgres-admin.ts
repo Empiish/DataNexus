@@ -1,4 +1,5 @@
 import { Client } from 'pg';
+import { QUERY_ROLE_PREFIX } from '@/lib/query-roles';
 
 function adminClient() {
   return new Client({ connectionString: process.env.DATABASE_URL });
@@ -16,11 +17,9 @@ export async function provisionAppSchema(slug: string, password: string) {
     await client.query(`GRANT CREATE ON SCHEMA "${schema}" TO "${user}"`);
     await client.query(`ALTER DEFAULT PRIVILEGES IN SCHEMA "${schema}" GRANT ALL ON TABLES TO "${user}"`);
     await client.query(`ALTER DEFAULT PRIVILEGES IN SCHEMA "${schema}" GRANT ALL ON SEQUENCES TO "${user}"`);
-    // L-388 Phase 1: grant the per-app role TO the admin login role so the
-    // query proxy (which connects as DATABASE_URL) can `SET ROLE` to it even
-    // when DATABASE_URL is not a superuser. Existing roles need a one-off
-    // backfill GRANT at deploy time (see L-388 runbook).
-    await client.query(`GRANT "${user}" TO CURRENT_USER`);
+    // No `GRANT app_<slug> TO CURRENT_USER` any more (DN-1, 2026-11-21): the
+    // query API no longer runs tenant SQL in the admin session. It logs in as
+    // the app's own query role (lib/query-roles.ts), created on first use.
   } finally {
     await client.end();
   }
@@ -34,6 +33,7 @@ export async function dropAppSchema(slug: string) {
   await client.connect();
   try {
     await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+    await client.query(`DROP ROLE IF EXISTS "${QUERY_ROLE_PREFIX}${schema}"`);
     await client.query(`DROP USER IF EXISTS "${user}"`);
   } finally {
     await client.end();
